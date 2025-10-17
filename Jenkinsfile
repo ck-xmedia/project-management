@@ -2,7 +2,7 @@ pipeline {
     agent any
 
     environment {
-        PYTHON_VERSION = '3.12'
+        PYTHON_VERSION = '3.13'
         VENV_NAME = 'venv'
         PYTEST_REPORT = 'test-reports'
         COVERAGE_REPORT = 'coverage-reports'
