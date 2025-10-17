@@ -1,178 +1,195 @@
 pipeline {
     agent any
-    
+
     environment {
         PYTHON_VERSION = '3.12'
-        PIP_CACHE_DIR = '.pip-cache'
-        PYTEST_JUNIT_PATH = 'test-results/pytest-results.xml'
-        COVERAGE_REPORT_PATH = 'coverage-reports/'
-        VENV_PATH = 'venv'
+        VENV_NAME = 'venv'
+        PYTEST_REPORT = 'test-reports'
+        COVERAGE_REPORT = 'coverage-reports'
+        SONAR_PROJECT_KEY = 'project-management'
     }
-    
+
+    parameters {
+        choice(name: 'ENVIRONMENT', choices: ['development', 'staging', 'production'], description: 'Deployment Environment')
+        booleanParam(name: 'RUN_TESTS', defaultValue: true, description: 'Run Tests?')
+        booleanParam(name: 'CODE_ANALYSIS', defaultValue: true, description: 'Run Code Analysis?')
+    }
+
     options {
         timestamps()
-        timeout(time: 30, unit: 'MINUTES')
+        timeout(time: 1, unit: 'HOURS')
         disableConcurrentBuilds()
+        ansiColor('xterm')
     }
-    
+
     stages {
         stage('Checkout') {
             steps {
                 checkout scm
             }
         }
-        
+
         stage('Setup Python Environment') {
             steps {
                 script {
-                    if (isUnix()) {
-                        sh """
-                            python${PYTHON_VERSION} -m venv ${VENV_PATH}
-                            . ${VENV_PATH}/bin/activate
-                            python -m pip install --upgrade pip
-                        """
-                    } else {
-                        bat """
-                            python -m venv ${VENV_PATH}
-                            ${VENV_PATH}\\Scripts\\activate.bat
-                            python -m pip install --upgrade pip
-                        """
-                    }
+                    sh """
+                        python${PYTHON_VERSION} -m venv ${VENV_NAME}
+                        . ${VENV_NAME}/bin/activate
+                        python -m pip install --upgrade pip
+                        pip install -r requirements.txt
+                    """
                 }
             }
         }
-        
-        stage('Install Dependencies') {
-            steps {
-                script {
-                    if (isUnix()) {
-                        sh """
-                            . ${VENV_PATH}/bin/activate
-                            pip install -r requirements.txt
-                        """
-                    } else {
-                        bat """
-                            ${VENV_PATH}\\Scripts\\activate.bat
-                            pip install -r requirements.txt
-                        """
-                    }
-                }
-            }
-        }
-        
+
         stage('Code Quality') {
             parallel {
                 stage('Black Format Check') {
                     steps {
                         script {
-                            if (isUnix()) {
-                                sh """
-                                    . ${VENV_PATH}/bin/activate
-                                    pip install black
-                                    black --check .
-                                """
-                            } else {
-                                bat """
-                                    ${VENV_PATH}\\Scripts\\activate.bat
-                                    pip install black
-                                    black --check .
-                                """
-                            }
+                            sh """
+                                . ${VENV_NAME}/bin/activate
+                                pip install black
+                                black --check .
+                            """
                         }
                     }
                 }
-                
+
                 stage('Ruff Linting') {
                     steps {
                         script {
-                            if (isUnix()) {
-                                sh """
-                                    . ${VENV_PATH}/bin/activate
-                                    pip install ruff
-                                    ruff check .
-                                """
-                            } else {
-                                bat """
-                                    ${VENV_PATH}\\Scripts\\activate.bat
-                                    pip install ruff
-                                    ruff check .
-                                """
-                            }
+                            sh """
+                                . ${VENV_NAME}/bin/activate
+                                pip install ruff
+                                ruff check .
+                            """
                         }
                     }
                 }
             }
         }
-        
+
         stage('Run Tests') {
+            when {
+                expression { params.RUN_TESTS }
+            }
             steps {
                 script {
-                    if (isUnix()) {
-                        sh """
-                            . ${VENV_PATH}/bin/activate
-                            mkdir -p test-results coverage-reports
-                            pytest --junitxml=${PYTEST_JUNIT_PATH} --cov=app --cov-report=xml:${COVERAGE_REPORT_PATH}/coverage.xml --cov-report=html:${COVERAGE_REPORT_PATH}/html
-                        """
-                    } else {
-                        bat """
-                            ${VENV_PATH}\\Scripts\\activate.bat
-                            if not exist test-results mkdir test-results
-                            if not exist coverage-reports mkdir coverage-reports
-                            pytest --junitxml=${PYTEST_JUNIT_PATH} --cov=app --cov-report=xml:${COVERAGE_REPORT_PATH}/coverage.xml --cov-report=html:${COVERAGE_REPORT_PATH}/html
-                        """
-                    }
+                    sh """
+                        . ${VENV_NAME}/bin/activate
+                        mkdir -p ${PYTEST_REPORT} ${COVERAGE_REPORT}
+                        pytest --junitxml=${PYTEST_REPORT}/junit.xml \
+                              --cov=app \
+                              --cov-report=xml:${COVERAGE_REPORT}/coverage.xml \
+                              --cov-report=html:${COVERAGE_REPORT}/html
+                    """
                 }
             }
             post {
                 always {
-                    junit testResults: 'test-results/pytest-results.xml'
+                    junit testResults: "${PYTEST_REPORT}/*.xml", allowEmptyResults: true
+                    publishCoverage adapters: [coberturaAdapter("${COVERAGE_REPORT}/coverage.xml")]
+                }
+            }
+        }
+
+        stage('Security Scan') {
+            when {
+                expression { params.CODE_ANALYSIS }
+            }
+            steps {
+                script {
+                    sh """
+                        . ${VENV_NAME}/bin/activate
+                        pip install bandit safety
+                        bandit -r . -f json -o bandit-report.json
+                        safety check
+                    """
+                }
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            when {
+                expression { params.CODE_ANALYSIS }
+            }
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    sh """
+                        sonar-scanner \
+                            -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                            -Dsonar.sources=. \
+                            -Dsonar.python.coverage.reportPaths=${COVERAGE_REPORT}/coverage.xml \
+                            -Dsonar.python.bandit.reportPaths=bandit-report.json
+                    """
+                }
+            }
+        }
+
+        stage('Build and Package') {
+            steps {
+                script {
+                    sh """
+                        . ${VENV_NAME}/bin/activate
+                        pip install build
+                        python -m build
+                    """
+                }
+                archiveArtifacts artifacts: 'dist/*', fingerprint: true
+            }
+        }
+
+        stage('Deploy') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'release/*'
+                }
+            }
+            steps {
+                script {
+                    def deployScript = """
+                        . ${VENV_NAME}/bin/activate
+                        echo "Deploying to ${params.ENVIRONMENT}"
+                        # Add deployment steps here based on environment
+                    """
+
+                    timeout(time: 15, unit: 'MINUTES') {
+                        sshagent(['deploy-key']) {
+                            sh deployScript
+                        }
+                    }
                 }
             }
         }
     }
-    
+
     post {
         always {
             cleanWs(
-                cleanWhenNotBuilt: false,
                 deleteDirs: true,
-                disableDeferredWipeout: true,
-                patterns: [
-                    [pattern: '**/__pycache__/**', type: 'INCLUDE'],
-                    [pattern: '**/*.pyc', type: 'INCLUDE'],
-                    [pattern: '**/venv/**', type: 'INCLUDE'],
-                    [pattern: '.pytest_cache/**', type: 'INCLUDE'],
-                    [pattern: '.coverage', type: 'INCLUDE']
-                ]
+                disableDeferredWipeout: true
             )
         }
         success {
-            script {
-                if (env.BRANCH_NAME == 'main') {
-                    slackSend(
-                        color: 'good',
-                        message: "Build Successful: ${env.JOB_NAME} #${env.BUILD_NUMBER}\nMore info at: ${env.BUILD_URL}"
-                    )
-                }
-            }
+            slackSend(
+                color: 'good',
+                message: "✅ Build Successful: ${env.JOB_NAME} #${env.BUILD_NUMBER}\n${env.BUILD_URL}"
+            )
+            emailext subject: "✅ Pipeline Successful: ${currentBuild.fullDisplayName}",
+                     body: "The pipeline completed successfully.",
+                     recipientProviders: [[$class: 'DevelopersRecipientProvider']]
         }
         failure {
-            script {
-                slackSend(
-                    color: 'danger',
-                    message: "Build Failed: ${env.JOB_NAME} #${env.BUILD_NUMBER}\nMore info at: ${env.BUILD_URL}"
-                )
-                
-                emailext(
-                    subject: "Build Failed: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                    body: """
-                        Build failed for ${env.JOB_NAME} #${env.BUILD_NUMBER}
-                        
-                        Check console output at: ${env.BUILD_URL}
-                    """,
-                    recipientProviders: [[$class: 'DevelopersRecipientProvider']]
-                )
-            }
+            slackSend(
+                color: 'danger',
+                message: "❌ Build Failed: ${env.JOB_NAME} #${env.BUILD_NUMBER}\n${env.BUILD_URL}"
+            )
+            emailext subject: "❌ Pipeline Failed: ${currentBuild.fullDisplayName}",
+                     body: "Please check Jenkins logs.",
+                     recipientProviders: [[$class: 'DevelopersRecipientProvider']]
         }
     }
 }
+
