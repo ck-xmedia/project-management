@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import os
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+# Import your routers
 from app.api.routers.v1 import auth as r_auth
 from app.api.routers.v1 import users as r_users
 from app.api.routers.v1 import projects as r_projects
@@ -16,15 +15,31 @@ from app.api.routers.v1 import sprints as r_sprints
 from app.api.routers.v1 import attachments as r_attachments
 from app.api.routers.v1 import activity as r_activity
 from app.api import websocket as ws
-from app.core.config import settings
+
+# Simplified Settings
+from pydantic_settings import BaseSettings
+
+class Settings(BaseSettings):
+    env: str = "dev"
+    log_level: str = "INFO"
+    # Optional fields to avoid database/secret errors
+    database_url: str = ""
+    secret_key: str = ""
+
+settings = Settings()
+
+# Logging and error handlers
 from app.core.errors import register_exception_handlers
 from app.core.logging import setup_logging
 
-
 def create_app() -> FastAPI:
+    # Setup logging
     setup_logging(settings.log_level)
+
+    # Initialize FastAPI
     app = FastAPI(title="Project Management API", version="1.0.0")
 
+    # Add CORS middleware
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -33,11 +48,10 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Register exception handlers
     register_exception_handlers(app)
 
-    api = FastAPI(openapi_url="/openapi.json")
-    router = FastAPI()
-
+    # Include routers
     app.include_router(r_auth.router, prefix="/api/v1")
     app.include_router(r_users.router, prefix="/api/v1")
     app.include_router(r_projects.router, prefix="/api/v1")
@@ -48,14 +62,14 @@ def create_app() -> FastAPI:
     app.include_router(r_sprints.router, prefix="/api/v1")
     app.include_router(r_attachments.router, prefix="/api/v1")
     app.include_router(r_activity.router, prefix="/api/v1")
-
     app.include_router(ws.router)
 
+    # Health check endpoint
     @app.get("/health")
     async def health():
         return {"status": "ok", "env": settings.env}
 
     return app
 
-
+# Create the app object for Uvicorn
 app = create_app()
