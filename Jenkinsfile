@@ -5,8 +5,7 @@ pipeline {
         VENV_DIR = 'venv'
         APP_PORT = '8111'
         APP_HOST = '0.0.0.0'
-        // CHANGE THIS to match your app structure:
-        APP_ENTRY_POINT = 'main:app'  // Options: 'main:app', 'app:app', 'src.main:app', etc.
+        APP_ENTRY_POINT = 'main:app'  // change if path differs
     }
 
     options {
@@ -52,7 +51,7 @@ pipeline {
                     echo $! > app.pid
                     sleep 5
                     echo "📝 Logs:"
-                    tail -5 app.log
+                    tail -n 20 app.log
                 '''
             }
         }
@@ -60,6 +59,7 @@ pipeline {
 
     post {
         always {
+            echo "🧹 Cleaning workspace..."
             cleanWs()
         }
     }
