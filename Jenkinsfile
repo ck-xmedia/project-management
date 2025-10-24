@@ -33,6 +33,25 @@ pipeline {
             }
         }
 
+        stage('Discover Project Structure') {
+            steps {
+                sh '''
+                    echo "📁 Current directory structure:"
+                    pwd
+                    ls -la
+                    
+                    echo "📄 Python files in project:"
+                    find . -name "*.py" -type f | head -20
+                    
+                    echo "📋 Requirements file:"
+                    ls -la requirements.txt || echo "No requirements.txt found"
+                    
+                    echo "🔍 Looking for FastAPI app entry points..."
+                    find . -name "*.py" -type f -exec grep -l "FastAPI\|app = FastAPI" {} \\; 2>/dev/null || echo "No FastAPI app found in Python files"
+                '''
+            }
+        }
+
         stage('Create Virtual Environment') {
             steps {
                 sh '''
@@ -50,17 +69,12 @@ pipeline {
                     . ${VENV_DIR}/bin/activate
                     echo "📦 Installing project dependencies..."
                     
-                    # Install packages with specific order to handle dependencies
                     pip install --upgrade pip
-                    
-                    # Install build dependencies first
                     pip install setuptools wheel
                     
-                    # Install asyncpg with proper flags for Python 3.12
                     echo "🔧 Installing asyncpg..."
                     pip install "asyncpg>=0.29.0" --no-build-isolation
                     
-                    # Now install the rest from requirements
                     if [ -f requirements.txt ]; then
                         echo "📄 Installing from requirements.txt..."
                         pip install -r requirements.txt
@@ -74,66 +88,87 @@ pipeline {
             }
         }
 
-        stage('Deploy') {
+        stage('Find and Deploy App') {
             steps {
                 script {
-                    echo "🚀 Starting application deployment..."
+                    echo "🔍 Auto-discovering application entry point..."
                     
-                    sh '''
+                    // First, try to find the correct app entry point
+                    def appEntryPoint = sh(
+                        script: '''
+                            # Look for common FastAPI patterns
+                            if [ -f "app.py" ] && grep -q "FastAPI" app.py; then
+                                echo "app:app"
+                            elif [ -f "main.py" ] && grep -q "FastAPI" main.py; then
+                                echo "main:app"
+                            elif [ -f "src/main.py" ] && grep -q "FastAPI" src/main.py; then
+                                echo "src.main:app"
+                            elif [ -f "api/main.py" ] && grep -q "FastAPI" api/main.py; then
+                                echo "api.main:app"
+                            else
+                                # Find first Python file with FastAPI
+                                FILE=$(find . -name "*.py" -type f -exec grep -l "FastAPI" {} \\; | head -1)
+                                if [ -n "$FILE" ]; then
+                                    # Convert file path to module path
+                                    MODULE_PATH=$(echo "$FILE" | sed 's/\.py$//' | sed 's/^\.\\///' | tr '/' '.')
+                                    echo "${MODULE_PATH}:app"
+                                else
+                                    echo "NOT_FOUND"
+                                fi
+                            fi
+                        ''',
+                        returnStdout: true
+                    ).trim()
+                    
+                    echo "🎯 Detected app entry point: ${appEntryPoint}"
+                    
+                    if (appEntryPoint == "NOT_FOUND") {
+                        error("❌ No FastAPI application found. Please check your project structure.")
+                    }
+                    
+                    // Now deploy with the discovered entry point
+                    sh """
                         . ${VENV_DIR}/bin/activate
-                        echo "🚀 Starting FastAPI application..."
-                        echo "📝 Command: python -m uvicorn main:app --host ${APP_HOST} --port ${APP_PORT}"
+                        echo "🚀 Starting FastAPI application: ${appEntryPoint}"
                         
-                        # Start the application in background and save PID
-                        nohup python -m uvicorn main:app --host ${APP_HOST} --port ${APP_PORT} > app.log 2>&1 &
-                        echo $! > app.pid
+                        nohup python -m uvicorn ${appEntryPoint} --host ${APP_HOST} --port ${APP_PORT} > app.log 2>&1 &
+                        echo \$! > app.pid
                         
-                        # Wait a moment for the app to start
                         sleep 10
                         
-                        # Check if application is running
-                        if ps -p $(cat app.pid) > /dev/null; then
-                            echo "✅ Application started successfully with PID: $(cat app.pid)"
-                            echo "🌐 Application should be accessible at: http://${APP_HOST}:${APP_PORT}"
+                        if ps -p \$(cat app.pid) > /dev/null; then
+                            echo "✅ Application started successfully with PID: \$(cat app.pid)"
+                            echo "🌐 Application accessible at: http://${APP_HOST}:${APP_PORT}"
                         else
                             echo "❌ Application failed to start"
-                            echo "📋 Checking application logs:"
-                            cat app.log || echo "No log file found"
+                            echo "📋 Application logs:"
+                            cat app.log
                             exit 1
                         fi
-                        
-                        # Optional: Test if the application is responding
-                        echo "🔍 Testing application health..."
-                        curl -f http://${APP_HOST}:${APP_PORT}/docs || curl -f http://${APP_HOST}:${APP_PORT}/ || echo "⚠️ Health check failed but continuing"
-                    '''
-                    
-                    echo "🎯 Deployment completed successfully"
+                    """
                 }
             }
         }
 
         stage('Verify Deployment') {
             steps {
-                script {
-                    echo "🔍 Verifying deployment..."
+                sh '''
+                    . ${VENV_DIR}/bin/activate
+                    echo "🔍 Testing application..."
                     
-                    sh '''
-                        # Check if application process is still running
-                        if [ -f app.pid ] && ps -p $(cat app.pid) > /dev/null; then
-                            echo "✅ Application is running with PID: $(cat app.pid)"
-                            echo "📊 Process info:"
-                            ps -p $(cat app.pid) -o pid,ppid,cmd
-                        else
-                            echo "❌ Application process not found"
-                            echo "📋 Application logs:"
-                            cat app.log 2>/dev/null || echo "No log file available"
-                        fi
-                        
-                        # Show recent log entries
-                        echo "📝 Recent application logs:"
-                        tail -20 app.log 2>/dev/null || echo "No log file available"
-                    '''
-                }
+                    # Try multiple common endpoints
+                    echo "🌐 Testing /docs endpoint..."
+                    curl -f http://${APP_HOST}:${APP_PORT}/docs || echo "⚠️ /docs not available"
+                    
+                    echo "🌐 Testing /redoc endpoint..."
+                    curl -f http://${APP_HOST}:${APP_PORT}/redoc || echo "⚠️ /redoc not available"
+                    
+                    echo "🌐 Testing root endpoint..."
+                    curl -f http://${APP_HOST}:${APP_PORT}/ || echo "⚠️ Root endpoint not available"
+                    
+                    echo "📝 Recent logs:"
+                    tail -10 app.log
+                '''
             }
         }
     }
@@ -141,106 +176,30 @@ pipeline {
     post {
         always {
             script {
-                echo "🧹 Performing cleanup..."
-                
-                // Optional: Stop the application if you want to clean up
-                // If you want to keep the application running, remove this section
+                echo "🧹 Cleaning up..."
                 sh '''
-                    echo "🛑 Stopping application if running..."
                     if [ -f app.pid ]; then
                         kill $(cat app.pid) 2>/dev/null || true
                         rm -f app.pid
                     fi
                 '''
-                
-                // Clean workspace but keep deployment artifacts
-                cleanWs(
-                    cleanWhenNotBuilt: false,
-                    deleteDirs: true,
-                    disableDeferredWipeout: true,
-                    patterns: [
-                        [pattern: '**/__pycache__/**', type: 'INCLUDE'],
-                        [pattern: '**/*.pyc', type: 'INCLUDE'],
-                        [pattern: '**/.pytest_cache/**', type: 'INCLUDE'],
-                        [pattern: '**/.mypy_cache/**', type: 'INCLUDE']
-                    ]
-                )
-                
-                // Build summary
-                def duration = currentBuild.durationString
-                def result = currentBuild.currentResult
-                
-                echo """
-                🏁 BUILD SUMMARY
-                ================
-                Result: ${result}
-                Duration: ${duration}
-                Python Version: ${env.PYTHON_VERSION}
-                Application URL: http://${env.APP_HOST}:${env.APP_PORT}
-                Build URL: ${env.BUILD_URL}
-                """
+                cleanWs()
             }
         }
         success {
-            script {
-                echo "🎉 Deployment completed successfully!"
-                emailext(
-                    subject: "✅ SUCCESS: Application Deployed - ${currentBuild.fullDisplayName}",
-                    body: """
-                    🎉 FastAPI Application Deployed Successfully!
-
-                    📋 Build Details:
-                    • Project: ${env.JOB_NAME}
-                    • Build: ${currentBuild.displayName}
-                    • Python Version: ${env.PYTHON_VERSION}
-                    • Duration: ${currentBuild.durationString}
-
-                    🚀 Deployment Status:
-                    • Application started on port ${APP_PORT}
-                    • Access URL: http://${APP_HOST}:${APP_PORT}
-                    • API Documentation: http://${APP_HOST}:${APP_PORT}/docs
-                    • Build Number: ${BUILD_NUMBER}
-
-                    📊 Application Info:
-                    • Process running in background
-                    • Log file: app.log
-                    • Using Uvicorn ASGI server
-
-                    --
-                    Jenkins CI/CD Automation
-                    """,
-                    to: 'developerxmedia052@gmail.com',
-                    attachLog: false
-                )
-            }
+            emailext(
+                subject: "✅ SUCCESS: Application Deployed - ${currentBuild.fullDisplayName}",
+                body: "Application deployed successfully!",
+                to: 'developerxmedia052@gmail.com'
+            )
         }
         failure {
-            script {
-                echo "❌ Deployment failed - check logs for details"
-                emailext(
-                    subject: "❌ FAILED: Application Deployment - ${currentBuild.fullDisplayName}",
-                    body: """
-                    ❌ FastAPI Application Deployment Failed!
-
-                    📋 Build Details:
-                    • Project: ${env.JOB_NAME}
-                    • Build: ${currentBuild.displayName}
-                    • Python Version: ${env.PYTHON_VERSION}
-                    • Duration: ${currentBuild.durationString}
-
-                    🔍 Troubleshooting:
-                    • Check build logs: ${env.BUILD_URL}console
-                    • Verify application entry point (main:app)
-                    • Check port ${APP_PORT} availability
-                    • Review dependency installation
-
-                    --
-                    Jenkins CI/CD Automation
-                    """,
-                    to: 'developerxmedia052@gmail.com',
-                    attachLog: true
-                )
-            }
+            emailext(
+                subject: "❌ FAILED: Deployment - ${currentBuild.fullDisplayName}",
+                body: "Deployment failed. Check Jenkins logs.",
+                to: 'developerxmedia052@gmail.com',
+                attachLog: true
+            )
         }
     }
 }
