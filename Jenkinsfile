@@ -66,7 +66,7 @@ pipeline {
                             sh 'sudo add-apt-repository -y ppa:deadsnakes/ppa'
                             sh 'sudo apt-get update'
                             sh 'sudo apt-get install -y python3.12 python3.12-venv python3.12-dev'
-                            echo "✅ Python 3.12 installed successfully"
+                            echo "✅ Python 3.12 installed successfully1"
                         } catch (Exception e) {
                             error("Failed to install Python 3.12: ${e.message}")
                         }
