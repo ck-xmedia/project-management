@@ -57,21 +57,17 @@ pipeline {
                     if (!pythonInstalled) {
                         error("Python 3 not found on the system")
                     }
-                    
-                    if (!pythonVersionCorrect) {
-                        echo "📦 Attempting to install Python 3.12..."
-                        try {
-                            sh 'sudo apt-get update || true'
-                            sh 'sudo apt-get install -y software-properties-common || true'
-                            sh 'sudo add-apt-repository -y ppa:deadsnakes/ppa || true'
-                            sh 'sudo apt-get update || true'
-                            sh 'sudo apt-get install -y python3.12 python3.12-venv python3.12-dev || true'
-                            echo "✅ Python 3.12 installation attempted"
-                        } catch (Exception e) {
-                            echo "⚠️ Could not install Python 3.12, but continuing with available Python version"
-                        }
-                    }
                 }
+            }
+        }
+
+        stage('Install System Dependencies') {
+            steps {
+                sh '''
+                    # Install system build dependencies
+                    sudo apt-get update || true
+                    sudo apt-get install -y build-essential python3-dev || true
+                '''
             }
         }
 
@@ -83,10 +79,15 @@ pipeline {
 
         stage('Install Dependencies') {
             steps {
-                sh 'python3 -m venv ${VENV_DIR} || python3.12 -m venv ${VENV_DIR} || true'
+                sh 'python3 -m venv ${VENV_DIR}'
                 sh '''
                     . ${VENV_DIR}/bin/activate
                     python -m pip install --upgrade pip
+                    
+                    # Try to install asyncpg with pre-built wheels first
+                    pip install --only-binary=all asyncpg || echo "Failed to install asyncpg with binary wheel, will try from source later"
+                    
+                    # Install the rest of requirements
                     pip install -r requirements.txt
                 '''
             }
@@ -96,7 +97,6 @@ pipeline {
             steps {
                 sh '''
                     . ${VENV_DIR}/bin/activate
-                    pip install black ruff
                     black --check . || echo "Black check failed, but continuing..."
                     ruff check . || echo "Ruff check failed, but continuing..."
                 '''
@@ -108,13 +108,20 @@ pipeline {
                 sh '''
                     . ${VENV_DIR}/bin/activate
                     mkdir -p test-results
-                    pip install pytest pytest-cov
                     python -m pytest --junitxml=${PYTEST_JUNIT_PATH} --cov=app --cov-report=xml:${COVERAGE_REPORT_DIR}/coverage.xml --cov-report=html:${COVERAGE_REPORT_DIR}/html || echo "Tests failed, but continuing..."
                 '''
             }
             post {
                 always {
                     junit testResults: "${PYTEST_JUNIT_PATH}", allowEmptyResults: true
+                    publishHTML(target: [
+                        allowMissing: true,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: "${COVERAGE_REPORT_DIR}/html",
+                        reportFiles: 'index.html',
+                        reportName: 'Coverage Report'
+                    ])
                 }
             }
         }
@@ -139,16 +146,14 @@ pipeline {
             emailext(
                 subject: "Pipeline Successful: ${currentBuild.fullDisplayName}",
                 body: "The pipeline completed successfully.",
-                recipientProviders: [[$class: 'DevelopersRecipientProvider']],
-                to: '${DEFAULT_RECIPIENTS}'  // Add this line
+                to: '${DEFAULT_RECIPIENTS}'
             )
         }
         failure {
             emailext(
                 subject: "Pipeline Failed: ${currentBuild.fullDisplayName}",
                 body: "The pipeline failed. Please check the build logs.",
-                recipientProviders: [[$class: 'DevelopersRecipientProvider']],
-                to: '${DEFAULT_RECIPIENTS}'  // Add this line
+                to: '${DEFAULT_RECIPIENTS}'
             )
         }
     }
