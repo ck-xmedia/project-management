@@ -46,8 +46,9 @@ pipeline {
                     echo "📋 Requirements file:"
                     ls -la requirements.txt || echo "No requirements.txt found"
                     
-                    echo "🔍 Looking for FastAPI app entry points..."
-                    find . -name "*.py" -type f -exec grep -l "FastAPI\|app = FastAPI" {} \\; 2>/dev/null || echo "No FastAPI app found in Python files"
+                    echo "🔍 Looking for FastAPI app..."
+                    # Use simpler grep command without complex escaping
+                    find . -name "*.py" -exec grep -l "FastAPI" {} \\; 2>/dev/null | head -5 || echo "No FastAPI app found"
                 '''
             }
         }
@@ -93,28 +94,25 @@ pipeline {
                 script {
                     echo "🔍 Auto-discovering application entry point..."
                     
-                    // First, try to find the correct app entry point
+                    // Use simpler approach without complex escaping
                     def appEntryPoint = sh(
                         script: '''
-                            # Look for common FastAPI patterns
-                            if [ -f "app.py" ] && grep -q "FastAPI" app.py; then
+                            # Simple approach to find FastAPI app
+                            if [ -f "app.py" ]; then
                                 echo "app:app"
-                            elif [ -f "main.py" ] && grep -q "FastAPI" main.py; then
+                            elif [ -f "main.py" ]; then
                                 echo "main:app"
-                            elif [ -f "src/main.py" ] && grep -q "FastAPI" src/main.py; then
+                            elif [ -f "src/app.py" ]; then
+                                echo "src.app:app"
+                            elif [ -f "src/main.py" ]; then
                                 echo "src.main:app"
-                            elif [ -f "api/main.py" ] && grep -q "FastAPI" api/main.py; then
+                            elif [ -f "api/app.py" ]; then
+                                echo "api.app:app"
+                            elif [ -f "api/main.py" ]; then
                                 echo "api.main:app"
                             else
-                                # Find first Python file with FastAPI
-                                FILE=$(find . -name "*.py" -type f -exec grep -l "FastAPI" {} \\; | head -1)
-                                if [ -n "$FILE" ]; then
-                                    # Convert file path to module path
-                                    MODULE_PATH=$(echo "$FILE" | sed 's/\.py$//' | sed 's/^\.\\///' | tr '/' '.')
-                                    echo "${MODULE_PATH}:app"
-                                else
-                                    echo "NOT_FOUND"
-                                fi
+                                # List all Python files and let user choose
+                                echo "NOT_FOUND"
                             fi
                         ''',
                         returnStdout: true
@@ -123,10 +121,18 @@ pipeline {
                     echo "🎯 Detected app entry point: ${appEntryPoint}"
                     
                     if (appEntryPoint == "NOT_FOUND") {
-                        error("❌ No FastAPI application found. Please check your project structure.")
+                        // Show available Python files and ask user to specify
+                        def pythonFiles = sh(
+                            script: 'find . -name "*.py" -type f | head -10',
+                            returnStdout: true
+                        ).trim()
+                        
+                        echo "📄 Available Python files:"
+                        echo "${pythonFiles}"
+                        error("❌ No common app entry point found. Please specify the correct entry point in the Jenkinsfile.")
                     }
                     
-                    // Now deploy with the discovered entry point
+                    // Deploy with the discovered entry point
                     sh """
                         . ${VENV_DIR}/bin/activate
                         echo "🚀 Starting FastAPI application: ${appEntryPoint}"
@@ -156,18 +162,11 @@ pipeline {
                     . ${VENV_DIR}/bin/activate
                     echo "🔍 Testing application..."
                     
-                    # Try multiple common endpoints
-                    echo "🌐 Testing /docs endpoint..."
-                    curl -f http://${APP_HOST}:${APP_PORT}/docs || echo "⚠️ /docs not available"
-                    
-                    echo "🌐 Testing /redoc endpoint..."
-                    curl -f http://${APP_HOST}:${APP_PORT}/redoc || echo "⚠️ /redoc not available"
-                    
-                    echo "🌐 Testing root endpoint..."
-                    curl -f http://${APP_HOST}:${APP_PORT}/ || echo "⚠️ Root endpoint not available"
+                    echo "🌐 Testing common endpoints..."
+                    curl -f http://${APP_HOST}:${APP_PORT}/docs || curl -f http://${APP_HOST}:${APP_PORT}/redoc || curl -f http://${APP_HOST}:${APP_PORT}/ || echo "⚠️ Endpoints not available yet"
                     
                     echo "📝 Recent logs:"
-                    tail -10 app.log
+                    tail -10 app.log || echo "No log file"
                 '''
             }
         }
@@ -182,6 +181,7 @@ pipeline {
                         kill $(cat app.pid) 2>/dev/null || true
                         rm -f app.pid
                     fi
+                    rm -f app.log 2>/dev/null || true
                 '''
                 cleanWs()
             }
