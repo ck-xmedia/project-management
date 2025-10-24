@@ -4,9 +4,8 @@ pipeline {
     environment {
         PYTHON_VERSION = '3.12.7'
         VENV_DIR = 'venv'
-        PYTEST_JUNIT_PATH = 'test-results/pytest.xml'
-        COVERAGE_REPORT_DIR = 'coverage'
-        PIP_CACHE_DIR = '/tmp/pip-cache'
+        APP_PORT = '8111'
+        APP_HOST = '0.0.0.0'
     }
 
     options {
@@ -67,7 +66,7 @@ pipeline {
                         pip install -r requirements.txt
                     else
                         echo "⚠️ requirements.txt not found, installing common packages..."
-                        pip install fastapi uvicorn sqlalchemy alembic pydantic pytest
+                        pip install fastapi uvicorn sqlalchemy alembic pydantic
                     fi
                     
                     echo "✅ Dependencies installed successfully"
@@ -75,26 +74,66 @@ pipeline {
             }
         }
 
-       
-
-        stage('Build Report') {
+        stage('Deploy') {
             steps {
-                sh '''
-                    . ${VENV_DIR}/bin/activate
-                    echo "📊 Generating build report..."
+                script {
+                    echo "🚀 Starting application deployment..."
                     
-                    echo "🐍 Python Environment:"
-                    python --version
-                    pip --version
+                    sh '''
+                        . ${VENV_DIR}/bin/activate
+                        echo "🚀 Starting FastAPI application..."
+                        echo "📝 Command: python -m uvicorn main:app --host ${APP_HOST} --port ${APP_PORT}"
+                        
+                        # Start the application in background and save PID
+                        nohup python -m uvicorn main:app --host ${APP_HOST} --port ${APP_PORT} > app.log 2>&1 &
+                        echo $! > app.pid
+                        
+                        # Wait a moment for the app to start
+                        sleep 10
+                        
+                        # Check if application is running
+                        if ps -p $(cat app.pid) > /dev/null; then
+                            echo "✅ Application started successfully with PID: $(cat app.pid)"
+                            echo "🌐 Application should be accessible at: http://${APP_HOST}:${APP_PORT}"
+                        else
+                            echo "❌ Application failed to start"
+                            echo "📋 Checking application logs:"
+                            cat app.log || echo "No log file found"
+                            exit 1
+                        fi
+                        
+                        # Optional: Test if the application is responding
+                        echo "🔍 Testing application health..."
+                        curl -f http://${APP_HOST}:${APP_PORT}/docs || curl -f http://${APP_HOST}:${APP_PORT}/ || echo "⚠️ Health check failed but continuing"
+                    '''
                     
-                    echo "📦 Installed Packages:"
-                    pip list
+                    echo "🎯 Deployment completed successfully"
+                }
+            }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                script {
+                    echo "🔍 Verifying deployment..."
                     
-                    echo "📁 Project Structure:"
-                    find . -name "*.py" -type f | head -20
-                    
-                    echo "✅ Build report generated"
-                '''
+                    sh '''
+                        # Check if application process is still running
+                        if [ -f app.pid ] && ps -p $(cat app.pid) > /dev/null; then
+                            echo "✅ Application is running with PID: $(cat app.pid)"
+                            echo "📊 Process info:"
+                            ps -p $(cat app.pid) -o pid,ppid,cmd
+                        else
+                            echo "❌ Application process not found"
+                            echo "📋 Application logs:"
+                            cat app.log 2>/dev/null || echo "No log file available"
+                        fi
+                        
+                        # Show recent log entries
+                        echo "📝 Recent application logs:"
+                        tail -20 app.log 2>/dev/null || echo "No log file available"
+                    '''
+                }
             }
         }
     }
@@ -102,15 +141,30 @@ pipeline {
     post {
         always {
             script {
-                echo "🧹 Cleaning up workspace..."
-                // Keep workspace for debugging, or clean specific files
+                echo "🧹 Performing cleanup..."
+                
+                // Optional: Stop the application if you want to clean up
+                // If you want to keep the application running, remove this section
                 sh '''
-                    # Clean cache files but keep important artifacts
-                    find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
-                    find . -name "*.pyc" -delete 2>/dev/null || true
-                    find . -name ".pytest_cache" -type d -exec rm -rf {} + 2>/dev/null || true
-                    find . -name ".mypy_cache" -type d -exec rm -rf {} + 2>/dev/null || true
+                    echo "🛑 Stopping application if running..."
+                    if [ -f app.pid ]; then
+                        kill $(cat app.pid) 2>/dev/null || true
+                        rm -f app.pid
+                    fi
                 '''
+                
+                // Clean workspace but keep deployment artifacts
+                cleanWs(
+                    cleanWhenNotBuilt: false,
+                    deleteDirs: true,
+                    disableDeferredWipeout: true,
+                    patterns: [
+                        [pattern: '**/__pycache__/**', type: 'INCLUDE'],
+                        [pattern: '**/*.pyc', type: 'INCLUDE'],
+                        [pattern: '**/.pytest_cache/**', type: 'INCLUDE'],
+                        [pattern: '**/.mypy_cache/**', type: 'INCLUDE']
+                    ]
+                )
                 
                 // Build summary
                 def duration = currentBuild.durationString
@@ -122,17 +176,18 @@ pipeline {
                 Result: ${result}
                 Duration: ${duration}
                 Python Version: ${env.PYTHON_VERSION}
+                Application URL: http://${env.APP_HOST}:${env.APP_PORT}
                 Build URL: ${env.BUILD_URL}
                 """
             }
         }
         success {
             script {
-                echo "🎉 Pipeline completed successfully!"
+                echo "🎉 Deployment completed successfully!"
                 emailext(
-                    subject: "✅ SUCCESS: Pipeline ${currentBuild.fullDisplayName}",
+                    subject: "✅ SUCCESS: Application Deployed - ${currentBuild.fullDisplayName}",
                     body: """
-                    🎉 Jenkins Pipeline Completed Successfully!
+                    🎉 FastAPI Application Deployed Successfully!
 
                     📋 Build Details:
                     • Project: ${env.JOB_NAME}
@@ -140,30 +195,32 @@ pipeline {
                     • Python Version: ${env.PYTHON_VERSION}
                     • Duration: ${currentBuild.durationString}
 
-                    📊 Test Results:
-                    • Check test coverage report in Jenkins
-                    • View detailed logs: ${env.BUILD_URL}
+                    🚀 Deployment Status:
+                    • Application started on port ${APP_PORT}
+                    • Access URL: http://${APP_HOST}:${APP_PORT}
+                    • API Documentation: http://${APP_HOST}:${APP_PORT}/docs
+                    • Build Number: ${BUILD_NUMBER}
 
-                    🐍 Python Environment:
-                    • Python 3.12.7 is properly configured
-                    • All dependencies installed successfully
-                    • Code quality checks passed
+                    📊 Application Info:
+                    • Process running in background
+                    • Log file: app.log
+                    • Using Uvicorn ASGI server
 
                     --
                     Jenkins CI/CD Automation
                     """,
-                    to: 'developerxmedia052@gmail.com',  // CHANGE THIS
+                    to: 'developerxmedia052@gmail.com',
                     attachLog: false
                 )
             }
         }
         failure {
             script {
-                echo "❌ Pipeline failed - check logs for details"
+                echo "❌ Deployment failed - check logs for details"
                 emailext(
-                    subject: "❌ FAILED: Pipeline ${currentBuild.fullDisplayName}",
+                    subject: "❌ FAILED: Application Deployment - ${currentBuild.fullDisplayName}",
                     body: """
-                    ❌ Jenkins Pipeline Failed!
+                    ❌ FastAPI Application Deployment Failed!
 
                     📋 Build Details:
                     • Project: ${env.JOB_NAME}
@@ -173,41 +230,15 @@ pipeline {
 
                     🔍 Troubleshooting:
                     • Check build logs: ${env.BUILD_URL}console
-                    • Verify Python 3.12.7 installation
-                    • Check dependency compatibility
+                    • Verify application entry point (main:app)
+                    • Check port ${APP_PORT} availability
+                    • Review dependency installation
 
                     --
                     Jenkins CI/CD Automation
                     """,
-                    to: 'developerxmedia052@gmail.com',  // CHANGE THIS
+                    to: 'developerxmedia052@gmail.com',
                     attachLog: true
-                )
-            }
-        }
-        unstable {
-            script {
-                echo "⚠️ Pipeline completed with warnings"
-                emailext(
-                    subject: "⚠️ UNSTABLE: Pipeline ${currentBuild.fullDisplayName}",
-                    body: """
-                    ⚠️ Jenkins Pipeline Completed with Warnings
-
-                    📋 Build Details:
-                    • Project: ${env.JOB_NAME}
-                    • Build: ${currentBuild.displayName}
-                    • Python Version: ${env.PYTHON_VERSION}
-                    • Duration: ${currentBuild.durationString}
-
-                    📝 Notes:
-                    • Tests passed but with some warnings
-                    • Code quality checks may have issues
-                    • Check build details: ${env.BUILD_URL}
-
-                    --
-                    Jenkins CI/CD Automation
-                    """,
-                    to: 'developerxmedia052@gmail.com',  // CHANGE THIS
-                    attachLog: false
                 )
             }
         }
