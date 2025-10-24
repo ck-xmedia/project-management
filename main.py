@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# Import your routers
+# Routers
 from app.api.routers.v1 import auth as r_auth
 from app.api.routers.v1 import users as r_users
 from app.api.routers.v1 import projects as r_projects
@@ -16,27 +16,17 @@ from app.api.routers.v1 import attachments as r_attachments
 from app.api.routers.v1 import activity as r_activity
 from app.api import websocket as ws
 
-# Simplified Settings
-from pydantic_settings import BaseSettings
-
-class Settings(BaseSettings):
-    env: str = "dev"
-    log_level: str = "INFO"
-    # Optional fields to avoid database/secret errors
-    database_url: str = ""
-    secret_key: str = ""
-
-settings = Settings()
-
-# Logging and error handlers
+# Settings and logging
+from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import setup_logging
+
 
 def create_app() -> FastAPI:
     # Setup logging
     setup_logging(settings.log_level)
 
-    # Initialize FastAPI
+    # Initialize FastAPI app
     app = FastAPI(title="Project Management API", version="1.0.0")
 
     # Add CORS middleware
@@ -48,7 +38,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Register exception handlers
+    # Register global exception handlers
     register_exception_handlers(app)
 
     # Include routers
