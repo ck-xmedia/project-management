@@ -1,30 +1,23 @@
 pipeline {
     agent any
-
+    
     environment {
-        APP_PORT = '8111'
+        APP_PORT = '8080'  # Try different port
     }
-
+    
     stages {
-        stage('Deploy Simple') {
+        stage('Deploy on 8080') {
             steps {
                 sh '''
-                    echo "🚀 Simple deployment on host server..."
-                    
-                    # Just start the app directly on host
                     cd /var/jenkins_home/workspace/project-management
-                    python3 -m venv host_venv
-                    . host_venv/bin/activate
+                    python3 -m venv venv
+                    . venv/bin/activate
                     pip install fastapi uvicorn
                     
-                    # Stop any running instance
                     pkill -f "uvicorn main:app" || true
+                    nohup python -m uvicorn main:app --host 0.0.0.0 --port ${APP_PORT} > app.log 2>&1 &
                     
-                    # Start app
-                    nohup python -m uvicorn main:app --host 0.0.0.0 --port ${APP_PORT} > host_app.log 2>&1 &
-                    
-                    echo "✅ App should be running"
-                    echo "🌐 Try: http://143.1.1.128:8111/"
+                    echo "✅ Try: http://143.1.1.128:${APP_PORT}/"
                 '''
             }
         }
