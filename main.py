@@ -1,65 +1,19 @@
-from __future__ import annotations
-
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
-# Routers
-from app.api.routers.v1 import auth as r_auth
-from app.api.routers.v1 import users as r_users
-from app.api.routers.v1 import projects as r_projects
-from app.api.routers.v1 import memberships as r_memberships
-from app.api.routers.v1 import tasks as r_tasks
-from app.api.routers.v1 import comments as r_comments
-from app.api.routers.v1 import tags as r_tags
-from app.api.routers.v1 import sprints as r_sprints
-from app.api.routers.v1 import attachments as r_attachments
-from app.api.routers.v1 import activity as r_activity
-from app.api import websocket as ws
+# Create FastAPI instance
+app = FastAPI(title="Project Management API", version="1.0.0")
 
-# Settings and logging
-from app.core.config import settings
-from app.core.errors import register_exception_handlers
-from app.core.logging import setup_logging
+# Root endpoint
+@app.get("/")
+def read_root():
+    return {"message": "🚀 FastAPI is running successfully!"}
 
+# Health check endpoint
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
 
-def create_app() -> FastAPI:
-    # Setup logging
-    setup_logging(settings.log_level)
-
-    # Initialize FastAPI app
-    app = FastAPI(title="Project Management API", version="1.0.0")
-
-    # Add CORS middleware
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
-    # Register global exception handlers
-    register_exception_handlers(app)
-
-    # Include routers
-    app.include_router(r_auth.router, prefix="/api/v1")
-    app.include_router(r_users.router, prefix="/api/v1")
-    app.include_router(r_projects.router, prefix="/api/v1")
-    app.include_router(r_memberships.router, prefix="/api/v1")
-    app.include_router(r_tasks.router, prefix="/api/v1")
-    app.include_router(r_comments.router, prefix="/api/v1")
-    app.include_router(r_tags.router, prefix="/api/v1")
-    app.include_router(r_sprints.router, prefix="/api/v1")
-    app.include_router(r_attachments.router, prefix="/api/v1")
-    app.include_router(r_activity.router, prefix="/api/v1")
-    app.include_router(ws.router)
-
-    # Health check endpoint
-    @app.get("/health")
-    async def health():
-        return {"status": "ok", "env": settings.env}
-
-    return app
-
-# Create the app object for Uvicorn
-app = create_app()
+# Example endpoint
+@app.get("/hello/{name}")
+def say_hello(name: str):
+    return {"message": f"Hello, {name} 👋"}
