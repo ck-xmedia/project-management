@@ -114,23 +114,31 @@ pipeline {
             }
         }
         success {
-            emailext(
-                subject: "✅ SUCCESS: FastAPI App Deployed - ${currentBuild.fullDisplayName}",
-                body: """
-                🎉 FastAPI Application Successfully Deployed!
+            script {
+                // Read the PID file safely
+                def pid = "Unknown"
+                try {
+                    pid = readFile('app.pid').trim()
+                } catch (Exception e) {
+                    pid = "Not available"
+                }
+                
+                emailext(
+                    subject: "✅ SUCCESS: FastAPI App Deployed - ${currentBuild.fullDisplayName}",
+                    body: """🎉 FastAPI Application Successfully Deployed!
 
-                📋 Build Details:
-                • Project: ${env.JOB_NAME}
-                • Build: ${currentBuild.displayName}
+📋 Build Details:
+• Project: ${env.JOB_NAME}
+• Build: ${currentBuild.displayName}
 
-                🌐 Access Your Application:
-                • URL: http://${JENKINS_IP}:${APP_PORT}
-                • API Docs: http://${JENKINS_IP}:${APP_PORT}/docs
+🌐 Access Your Application:
+• URL: http://${env.JENKINS_IP}:${env.APP_PORT}
+• API Docs: http://${env.JENKINS_IP}:${env.APP_PORT}/docs
 
-                🔧 Process ID: $(readFile('app.pid').trim())
-                """,
-                to: 'developerxmedia052@gmail.com'
-            )
+🔧 Process ID: ${pid}""",
+                    to: 'developerxmedia052@gmail.com'
+                )
+            }
         }
     }
 }
